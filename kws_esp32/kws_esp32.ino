@@ -27,7 +27,6 @@ int16_t audio_buffer[AUDIO_LEN];
 //MFCC Features
 #define NUM_FRAMES 49
 #define NUM_MFCC 13
-
 float mfcc features[NUM_FRAMES][NUM_MFCC];
 
 //I2S Setup
