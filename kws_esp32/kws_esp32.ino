@@ -64,6 +64,19 @@ static mfcc_config_t mfcc_config = {
 constexpr int kTensorArenaSize = 70*1024;
 uint8_t tensor_arena[kTensorArenaSize];
 
+namespace{
+  tflite::ErrorReporter* error_reporter = nullptr;
+  const tflite::Model* model = nullptr;
+  tflite::MicroInterpreter interpreter = nullptr;
+  TfLiteTensor* model_input = nullptr;
+  TfLiteTensor* model_output = nullptr;
+}
+
+//Class Labels
+#define ON 0
+#define OFF 1
+#define UNKNOWN 2
+
 //I2S Setup
 void SetupI2S(){
  i2s_config_t i2s_config = {
