@@ -2,23 +2,21 @@
 
 #include <driver/i2s.h> //I2S driver library
 #include <LiquidCrystal.h> //LCD library
-//Edge Impulse libraries
-#include "dsp/speechpy/speechpy.hpp"
-#include "dsp/config.hpp"
-using namespace ei::dsp::speechpy;
 
 //TensorFlowLite
-#include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
-#include "tensorflow/lite/micro/micro_error_reporter.h"
-#include "tensorflow/lite/micro/micro_interpreter.h"
-#include "tensorflow/lite/schema/schema_generated.h"
-#include "tensorflow/lite/version.h"
+#include <tensorflow/lite/micro/micro_mutable_op_resolver.h>
+#include <tensorflow/lite/micro/micro_interpreter.h>
+#include <tensorflow/lite/schema/schema_generated.h>
+#include "tensorflow/lite/micro/micro_log.h"
+#include "tensorflow/compiler/mlir/lite/core/api/error_reporter.h"
+#include "micro_features_generator.h"
+#include "micro_model_settings.h"
 
 //Our model
 #include "kws_model.h"
 
 //LED Pin 
-#define LED_PIN 4
+#define LED_PIN 13
 
 //Microphone Pins
 #define I2S_WS 25
@@ -39,43 +37,21 @@ LiquidCrystal lcd(LCD_RS, LCD_E, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
 #define I2S_PORT I2S_NUM_0
 
 //Audio Settings
-#define SAMPLE_RATE 16000
-#define AUDIO_LEN 16000
-int16_t audio_buffer[AUDIO_LEN];
+static int16_t audio_buffer[kAudioSampleFrequency];
 
 //MFCC Features
-#define NUM_FRAMES 49
-#define NUM_MFCC 13
-float mfcc features[NUM_FRAMES][NUM_MFCC];
-
-static mfcc_config_t mfcc_config = {
-  .num filters = 40,
-  .num_cepstral  = NUM_MFCC,
-  .frame_length  = 480,   // 30 ms
-  .frame_stride  = 320,   // 20 ms
-  .low_frequency = 20,
-  .high_frequency= 8000,
-  .fft_length    = 512,
-  .pre_emphasis  = 0.98,
-  .window_type   = MFCC_WINDOW_HAMMING,
-  .log_scale     = true
-};
+static int8_t mfcc_buffer[kFeatureCount][kFeatureSize];
 
 //TFLite Setup
-constexpr int kTensorArenaSize = 70*1024;
+constexpr int kTensorArenaSize = 60*1024;
 uint8_t tensor_arena[kTensorArenaSize];
 
 namespace{
-  tflite::ErrorReporter* error_reporter = nullptr;
   const tflite::Model* model = nullptr;
-  tflite::MicroInterpreter interpreter = nullptr;
-  TfLiteTensor* model_input = nullptr;
-  TfLiteTensor* model_output = nullptr;
+  tflite::MicroInterpreter* interpreter = nullptr;
+  TfLiteTensor* input = nullptr;
+  TfLiteTensor* output = nullptr;
 }
-
-//Error Reporter
-static tflite::MicroErrorReporter micro_error_reporter;
-error_reporter = &micro_error_reporter;
 
 //Class Labels
 #define ON 0
@@ -84,10 +60,10 @@ error_reporter = &micro_error_reporter;
 int last_result = -1;
 
 //I2S Setup
-void SetupI2S(){
+void setupI2S(){
  i2s_config_t i2s_config = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-    .sample_rate = SAMPLE_RATE,
+    .sample_rate = kAudioSampleFrequency,
     .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
     .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
     .communication_format = I2S_COMM_FORMAT_I2S,
@@ -110,35 +86,21 @@ void SetupI2S(){
 void recordAudio(){
   size_t bytes_read;
   int i = 0;
-  while(i<AUDIO_LEN){
-    i2s_read(I2S_PORT, &audio_buffer[i], (AUDIO_LEN - i)*sizeof(int16_t), &bytes_read, portMAX_DELAY);
+  while(i<kAudioSampleFrequency){
+    i2s_read(I2S_PORT, &audio_buffer[i], (kAudioSampleFrequency - i)*sizeof(int16_t), &bytes_read, portMAX_DELAY);
     i+=(bytes_read/sizeof(int16_t));
-  }
-}
-
-//Plotting sound from microphone on serial plotter
-void plotAudio(){
-  for(int i=0;i<AUDIO_LEN;i+=16){
-    Serial.println(audio_buffer[i]);
   }
 }
 
 //Extracting MFCC from recorded audio
 void computeMFCC(){
-static float audio_float[AUDIO_LEN];
-for(int i=0;i<AUDIO_LEN;i++){
-  audio_float[i] = audio_buffer[i]/32768.0f;
-}
-extract_mfcc_features(audio_float, AUDIO_LEN, SAMPLE_RATE, &mfcc_config, mfcc_features);
+ size_t num_samples;
+ GenerateFeatures(audio_buffer, kAudioSampleFrequency, &mfcc_buffer);
 }
 
 //Setting up the model
 void setupModel(){
   model = tflite::GetModel(kws_model_tflite);
-  if(model->version() != TFLITE_SCHEMA_VERSION){
-    error_reporter->Report("Your model version %d does not match Schema version %d", model->version(), TFLITE_SCHEMA_VERSION);
-    return;
-  }
   static tflite::MicroMutableOpResolver<8> resolver;
   resolver.AddConv2D();
   resolver.AddDepthwiseConv2D();
@@ -148,30 +110,31 @@ void setupModel(){
   resolver.AddQuantize();
   resolver.AddDequantize();
 
-  interpreter = new tflite::MicroInterpreter(model, resolver, tensor_arena, kTensorArenaSize, error_reporter);
+  interpreter = new tflite::MicroInterpreter(model, resolver, tensor_arena, kTensorArenaSize);
 
   TfLiteStatus allocate_status = interpreter->AllocateTensors();
-  if(allocate_status != kTfLiteOk){
-    error_reporter->Report("AllocateTensors() failed");
-    return;
-  }
+  if (allocate_status != kTfLiteOk) {
+  MicroPrintf("AllocateTensors FAILED");
+  while (1) {}
+}
+
+MicroPrintf("AllocateTensors OK");
 
   input = interpreter->input(0);
   output = interpreter->output(0);
 }
 
-//Converting float to int8 and feeding it to input tensors
+//Giving audio to input tensors
 void fillInputTensors(){
-  float scale = input->params.scale;
-  int zero_point = input->params.zero_point;
-  for(int i=0; i< (NUM_MFCC*NUM_FRAMES); i++){
-    int8_t q = (int8_t)((mfcc_features[i]/scale) + zero_point);
-    input->data.int8[i] = q;
+  for(int i=0; i<kFeatureCount; i++){
+    for(int j=0; j<kFeatureSize; j++){
+     input->data.int8[i] = mfcc_buffer[i][j];
+    }
   }
 }
 
 //Give input to the model and get output
-void runModel(){
+int runModel(){
   interpreter->Invoke();
   int best = 0;
   int8_t max_val = output->data.int8[0];
@@ -194,10 +157,10 @@ lcd.setCursor(0,0);
 lcd.print("STATUS: ");
 lcd.setCursor(0,1);
 if(result == ON){
-  lcd.print("ON");
+  lcd.print("LED is ON now!");
 }
 else if(result == OFF){
-  lcd.print("OFF");
+  lcd.print("LED is OFF now!");
 }
 else{
   lcd.print("UNKNOWN AUDIO");
@@ -206,11 +169,27 @@ last_result = result;
 }
 
 void setup() {
-  // put your setup code here, to run once:
-
+ Serial.begin(115200);
+ pinMode(LED_PIN, OUTPUT);
+ lcd.begin(16,2);
+ lcd.print("Keyword Spotting On ESP32");
+ setupI2S();
+ setupModel();
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
+  recordAudio();
+  computeMFCC();
+  fillInputTensors();
+  int result = runModel();
+  updateLCD(result);
+  if(result == ON){
+    digitalWrite(LED_PIN, HIGH);
+    Serial.println("LED is ON now!");
+  }
+  else{
+    digitalWrite(LED_PIN, LOW);
+    Serial.println("LED is OFF now!");
+  }
 
 }
