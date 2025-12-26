@@ -20,18 +20,19 @@ limitations under the License.
 // If you change the way you preprocess the input, update all these constants.
 constexpr int kMaxAudioSampleSize = 512;
 constexpr int kAudioSampleFrequency = 16000;
-constexpr int kFeatureSize = 13;
+constexpr int kFeatureSize = 40;
 constexpr int kFeatureCount = 49;
 constexpr int kFeatureElementCount = (kFeatureSize * kFeatureCount);
 constexpr int kFeatureStrideMs = 20;
 constexpr int kFeatureDurationMs = 30;
 
 // Variables for the model's output categories.
-constexpr int kCategoryCount = 3;
+constexpr int kCategoryCount = 4;
 constexpr const char* kCategoryLabels[kCategoryCount] = {
+    "silence",
     "unknown",
-    "off",
     "on",
+    "off"
 };
 
 #endif  // TENSORFLOW_LITE_MICRO_EXAMPLES_MICRO_SPEECH_MICRO_MODEL_SETTINGS_H_
