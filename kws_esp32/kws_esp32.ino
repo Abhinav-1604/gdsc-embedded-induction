@@ -19,7 +19,7 @@
 #include "model.h"
 
 //LED Pin 
-#define LED_PIN 2
+#define LED_PIN 4
 uint8_t led_state = 0;
 
 //LCD Pins
@@ -79,7 +79,7 @@ void computeMFCC(){
 //Setting up the model
 void setupModel(){
   model = tflite::GetModel(g_model);
-  static tflite::MicroMutableOpResolver<5> resolver;
+  static tflite::MicroMutableOpResolver<6> resolver;
   if (resolver.AddDepthwiseConv2D() != kTfLiteOk) {
     return;
   }
@@ -194,5 +194,3 @@ Serial.println("STEP 4: led");
   }
   digitalWrite(LED_PIN, led_state);
 }
-
-
